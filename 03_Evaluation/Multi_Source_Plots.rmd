@@ -1,0 +1,157 @@
+---
+title: "Multisource Plot"
+output: html_notebook
+---
+
+# Multi Source Plots 
+Show the overlap between multi-sources, comparing predicted & true labels
+
+## Load data and libraries
+```{r}
+# Install missing libraries
+# install.packages("ggupset")
+# remotes::install_github("coolbutuseless/ggpattern")
+
+
+# Load libraries
+library(tidyverse)
+library(ggupset)
+library(ggpattern)
+```
+```{r}
+clean_category_names <- function(input_df){
+  old_names <- colnames(input_df)
+  
+  # Replace dashes with spaces and capitalize
+  new_names <- old_names %>%
+    gsub("_", " ", .) %>%  # replace underscores with spaces
+    tools::toTitleCase()   # capitalize first letter of each word
+  
+  # Handle specific cases
+  new_names <- new_names %>%
+    gsub("Ent", "ENT", .)  # replace 'Ent' with 'ENT'
+  
+  # Assign the new names back to the dataframe
+  colnames(input_df) <- new_names
+  
+  return(input_df)
+}
+```
+
+Load the data
+Set indices, set multi-source flags, join the two data frames by columns
+```{r}
+# --- Set the paths
+data_path = "../00_Data/"
+plot_path <- paste0(data_path, "publication_ready/plots/")
+
+model_name = "Bio_ClinicalBERT"
+test_location = "banbury"
+
+bert_predictions_path = sprintf("%s/export/%s/%s_%s_predictions.csv", data_path, model_name, model_name, test_location)
+bert_true_path = sprintf("%s/publication_ready/testing_%s_2023-08-23.csv", data_path, test_location)
+
+# --- Load the files
+bert_predictions_tbl <- read_csv(bert_predictions_path, show_col_types = FALSE)
+bert_true_tbl <- read_csv(bert_true_path, show_col_types = FALSE)
+
+# --- Clean/reformat the data
+# Convert integers to logical, remove uncertainty column, add indication raw column
+bert_true <- bert_true_tbl %>%
+  mutate(across(where(is.numeric), as.logical)) %>%
+  select(-uncertainty, -PrescriptionID) %>%
+  clean_category_names
+
+bert_predictions <-  bert_predictions_tbl %>%
+  mutate(across(where(is.numeric), as.logical)) %>%
+  select(-uncertainty) %>%
+  mutate(Indication = bert_true$Indication) %>%
+  clean_category_names
+
+# --- Get indication list
+indication_list <- colnames(bert_predictions_tbl)
+```
+
+## Preprocess and reshape the data
+1. Get a list of indication (or ID) -> Multilevel source list
+2. Combine rows & flag (add indicator for truth, icd, indication)
+   Compare to truth and flag incorrect ones
+3. Count occurrences per group and combine the data frames
+
+1. Aggregate to multi-sources
+```{r}
+multi_true <- bert_true %>%
+  pivot_longer(!Indication) %>%
+  filter(value) %>%
+  group_by(Indication) %>%
+  # Renmove duplicates
+  distinct(name, .keep_all = TRUE) %>%
+  # Take only the detected source
+  filter(n()>1) %>%
+  summarise(Source=list(sort(name)))
+```
+
+```{r}
+multi_predictions <- bert_predictions %>%
+  pivot_longer(!Indication) %>%
+  filter(value) %>%
+  group_by(Indication) %>%
+  # Take only the detected source
+  filter(n()>1) %>%
+  summarise(Source=list(sort(name)))
+```
+
+2. Combine and add indicator for matching
+```{r}
+multi_true_matching <- multi_true %>%
+  mutate(Matching=TRUE)
+```
+
+```{r}
+multi_predictions_matching <- multi_predictions %>%
+  left_join(multi_true, 
+            by = "Indication",
+            suffix = c("", "_True")) %>%
+  mutate(Matching=pmap_lgl(list(Source, Source_True), identical)) %>%
+  select(-Source_True)
+```
+
+3. Count occurrences & combine for the final data frame
+```{r}
+# Count occurrences per source and matching type
+count_true <- multi_true_matching %>%
+  count(Source, Matching, name="y_end") %>%
+  mutate(DataOrigin="Ground Truth")
+
+count_predictions <- multi_predictions_matching %>%
+  count(Source, Matching, name="y_end") %>%
+  # Invert y_end for mismatches
+  mutate(y_end=if_else(Matching, y_end, -y_end)) %>%
+  mutate(DataOrigin="Predicted Labels")
+
+
+# Combine rows
+count_combined <- count_true %>%
+  bind_rows(count_predictions)
+```
+
+## Plot the data
+```{r}
+plt <- ggplot(count_combined, aes(x=Source)) +
+  geom_col_pattern(aes(y=y_end, fill=DataOrigin,  pattern_density=Matching, group=DataOrigin), 
+                   pattern_fill = "white",
+                   pattern_colour = "white",
+                   position=position_dodge(preserve = "single")) +
+  scale_pattern_density_manual(values = c("TRUE" = 0.0, "FALSE"=0.2)) +
+  scale_x_upset(n_intersections = 15) +
+  
+  xlab("Infection Source") +
+  ylab("Intersection Size [Count]")
+
+paste0(plot_path, sprintf("UpSet-Combination_MultiSource_%s.png", test_location)) %>%
+  ggsave(plt,
+         width = 25,
+         height = 15,
+         units = "cm")
+```
+

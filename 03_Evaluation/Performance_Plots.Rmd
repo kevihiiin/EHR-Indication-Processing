@@ -1,0 +1,164 @@
+---
+title: "Performance Metrics"
+output: html_notebook
+---
+Regenerate the plots from python in R tidyverse to make them look prettier.
+
+
+## Import data and libraries
+Import libraries
+```{r}
+library(tidyverse)
+require(tools)  # Base R library
+theme_set(theme_light())  # or theme_light()
+
+```
+Define helper functions and variables
+```{r}
+categories = c('Abdominal', 'ENT', 'Neurological', 'No Specific Source', 'Not Informative', 'Orthopaedic', 'Other Specific', 'Prophylaxis', 'Respiratory', 'Skin & Soft Tissue', 'Urinary')
+
+model = "Bio_ClinicalBERT"
+```
+
+### Read the data
+```{r}
+# Read the confusion matrices
+confusion_matrix_banbury <- read_csv("/home/kevinyuan/EHR-Indication-Processing/03_Evaluation/tmp/Bio_ClinicalBERT_banbury_confusion_matrix_long.csv", col_types = cols(
+  `True Label` = col_character(),
+  `Predicted Label` = col_character(),
+  Value = col_double()
+  )) %>%
+  mutate(
+    `True Label` = fct_relevel(`True Label`, categories),
+    `Predicted Label` = fct_relevel(`Predicted Label`, rev(categories))
+  )
+
+confusion_matrix_oxford <- read_csv("/home/kevinyuan/EHR-Indication-Processing/03_Evaluation/tmp/Bio_ClinicalBERT_oxford_confusion_matrix_long.csv", col_types = cols(
+  `True Label` = col_character(),
+  `Predicted Label` = col_character(),
+  Value = col_double()
+  )) %>%
+  mutate(
+    `True Label` = fct_relevel(`True Label`, categories),
+    `Predicted Label` = fct_relevel(`Predicted Label`, rev(categories))
+  )
+
+# Read the f1 scores
+f1_scores_banbury <- read_csv("/home/kevinyuan/EHR-Indication-Processing/03_Evaluation/tmp/Bio_ClinicalBERT_banbury_f1_scores.csv", col_types = cols(
+      Source = col_character(),
+      `F1 Score` = col_double()
+    )
+  ) %>% mutate(
+    Source = fct_relevel(Source, categories)
+  )
+
+f1_scores_oxford <- read_csv("/home/kevinyuan/EHR-Indication-Processing/03_Evaluation/tmp/Bio_ClinicalBERT_oxford_f1_scores.csv", col_types = cols(
+      Source = col_character(),
+      `F1 Score` = col_double()
+  )) %>%
+  mutate(
+    Source = fct_relevel(Source, categories)
+  )
+```
+
+
+## Plot Graphs
+Create single plots first (CM & F1 score bar plot) and then combine them into a single plot
+1. Create Confusion Matrix plots
+2. Create F1 score bar plots
+3. Combine plots to multipanel figure (cowplot)
+
+### Confusion Matrix
+Function that creates the confusion matrix and returns a ggplot object
+```{r}
+plot_confusion_matrix <- function(confusion_matrix_long, model, location){
+  plt <- confusion_matrix_long %>%
+    ggplot(aes(x = `True Label`, y = `Predicted Label`)) +
+      # --- Plot Values ---
+      # Rectangles
+      geom_tile(aes(fill = Value), colour = "grey92") +
+      # Text
+      geom_text(aes(label = sprintf("%.2f", Value)), size=2.5) +
+    
+      # --- Title, Axis and Scales ---
+      labs(x = sprintf("Clinican Assigned Source\n (%s Data)", tools::toTitleCase(location)),
+           y = "Predicted by Bio+Clinical BERT") +
+  
+      
+      # --- Style ---
+      # Theme
+      # theme_minimal() +
+    
+      # Scale
+      scale_fill_gradient(low = "#f5fafe", high = "steelblue") +
+      # Guide style
+      # guides(fill = guide_colourbar(barheight = 20)) +
+      # Square tiles
+      coord_equal() +
+      # Rotate x-axis labels
+      theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+  
+  return(plt)
+}
+
+cm_oxford <- plot_confusion_matrix(confusion_matrix_oxford, model, "Oxford")
+cm_banbury <- plot_confusion_matrix(confusion_matrix_banbury, model, "Banbury")
+cm_oxford
+```
+
+### F1 Score Bar plots
+Function that creates the F1 score bar plot and returns a ggplot object
+```{r}
+plot_f1_score <- function(f1_scores, model, location){
+  plt <- f1_scores %>%
+    ggplot(aes(x = Source, y = `F1 Score`)) +
+      # --- Plot Values ---
+      # Bars
+      geom_bar(stat = "identity", fill = "steelblue") +
+      # Text
+      geom_text(aes(label = sprintf("%.2f", `F1 Score`)), vjust = -0.5, size=2.5) +
+    
+      # --- Title, Axis and Scales ---
+      labs(x = NULL,  # Infection Source/Category",
+           y = sprintf("F1 Score\n (%s Data)", tools::toTitleCase(location))) +
+      ylim(NA, 1.1) +
+  
+      
+      # --- Style ---
+      # Theme
+      # theme_minimal() +
+      # theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+    
+      # Rotate x-axis labels
+      theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+  
+  return(plt)
+}
+
+f1_oxford <- plot_f1_score(f1_scores_oxford, model, "Oxford")
+f1_banbury <- plot_f1_score(f1_scores_banbury, model, "Banbury")
+print(f1_oxford)
+print(f1_banbury)
+```
+
+### Combine Plots
+Try patchwork
+```{r}
+library(patchwork)
+multiplot <- 
+  (f1_oxford + labs(tag = "A")) + 
+  (f1_banbury + labs(tag = "B")) +
+  (cm_oxford + labs(tag = "C")) + 
+  (cm_banbury + labs(tag = "D")) + 
+  plot_layout(
+      ncol = 2,
+      nrow = 2,
+      heights = c(1, 3)
+    )
+
+multiplot
+ggsave("multiplot.png", multiplot, width = 30, height = 20, units = "cm")
+ggsave("multiplot.pdf", multiplot, width = 30, height = 20, units = "cm")
+
+```
+

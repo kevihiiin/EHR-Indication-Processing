@@ -1,0 +1,186 @@
+---
+title: "Antibiotics Indication Matching"
+output: html_notebook
+---
+
+Antibiotics dataset overview, with code snippets and some graphs to better understand this data.
+```{r Loading libraries}
+library(lubridate)
+library(tidyverse)
+library(stringi)
+library(stringdist)
+```
+
+## Parse the data
+Set the data path and maximum number of rows to read
+```{r Setting up the Environment}
+path_data <- '/home/shared/iord_extract_20220325'
+path_cleaned <- '/home/kevinyuan/AMR-Project/00_Data/01_cleaned'
+n_max <- Inf # Inf  # Set to 'Inf' for no limit
+```
+
+Read the data and parse into the correct format.
+```{r Parsing the Data Antibiotics}
+# Assemble path and read file
+path_antibiotics <- paste(path_data, 'antibiotic_prescriptions.csv', sep = '/')
+antibiotics_tbl <- read_csv(path_antibiotics, n_max = n_max, col_types = cols(
+  Clusterid = col_double(),
+  PrescriptionID = col_character(),
+  PrescriptionDate = col_datetime(format = ""),
+  PrescriptionStatus = col_factor(),
+  PrescriptionType = col_factor(),
+  AdmissionDate = col_date(format = ""),
+  Drug = col_factor(),
+  Formulation = col_character(),
+  Dose = col_double(),
+  DoseUnit = col_factor(),
+  Frequency = col_factor(),
+  Route = col_factor(),
+  Indication = col_character(),
+  ScheduledStartDateTime = col_datetime(format = ""),
+  ScheduledStopDateTime = col_datetime(format = ""),
+  DurationEnteredByPrescriber = col_character(),
+  ReviewDateTime = col_datetime(format = ""),
+  FirstAdministrationDateTime = col_datetime(format = ""),
+  LastAdministrationDateTime = col_datetime(format = ""),
+  NumberOfDosesAdministered = col_double(),
+  SpecialInstructions = col_character(),
+  AntibioticsSource = col_factor()
+)) %>%
+  # Rename the column `Clusterid` to `ClusterID`
+  rename(ClusterID = Clusterid)
+
+summary(antibiotics_tbl)
+```
+```{r Parsing the Data Episodes}
+# Assemble path and read file
+path_episodes <- paste(path_data, 'inpt_episode.csv', sep = '/')
+episodes_tbl <- read_csv(path_episodes, n_max = n_max, col_types = cols(
+  .default = col_datetime(),
+  ClusterID = col_double(),
+  SpellID = col_double(),
+  EpisodeID = col_character(),
+  LinkedSex = col_factor(),
+  ConsultantMainSpecialtyCode = col_factor(),
+  EthnicGroupCode = col_factor(),
+  PostcodeStub = col_factor(),
+  IMDScore = col_double(),
+  ConsultantCodeAnon = col_factor(),
+  AdmissionSourceCode = col_factor(),
+  AdmissionMethodCode = col_factor(),
+  DischargeDestinationCode = col_factor(),
+  DischargeMethodCode = col_factor()
+))
+
+summary(episodes_tbl)
+```
+
+## Join Data
+Join the `episodes_tbl` and `antibiotics_tbl` data.
+Create two simplified data.frames with only needed columns ending in `_basic`.
+
+We get the following data.frames used for further processing/analysis:
+- Joined data: `episodes_antibiotics`
+
+Use for quick analysis of indications:
+- Extracted indication: `raw_indications`
+
+```{r Join Episodes and Antibiotics data}
+episodes_basic <- episodes_tbl %>%
+  distinct(ClusterID, SpellID, AdmissionDate)
+
+antibiotics_basic <- antibiotics_tbl %>%
+  distinct(ClusterID, AdmissionDate, Indication, PrescriptionID)
+  
+episodes_antibiotics <- episodes_basic %>%
+  mutate(AdmissionDate = as_date(AdmissionDate)) %>%
+  inner_join(antibiotics_basic, by = c("ClusterID", "AdmissionDate")) %>%
+  drop_na()
+
+raw_indications <- episodes_antibiotics %>%
+  select(Indication)
+```
+
+## Basic cleaning of the indication column
+Cleaning steps:
+1. Convert to lower case
+2. Remove all non-sense indications
+
+### Explore the dataset
+**Analyse some non-character indications**
+Show indication starts
+```{r Show indication starting letters}
+raw_indications %>%
+  mutate(Indication_Start = str_sub(Indication, 1, 1), .keep = "used") %>%
+  pull(Indication_Start) %>%
+  table()
+```
+
+Show indications starting with non-letters or ?
+```{r Show indications not starting with letters}
+`%notin%` <- Negate(`%in%`)
+
+raw_indications %>%
+  filter(str_sub(Indication, 1 , 1) %notin% c(letters, LETTERS, "?"))
+```
+
+**Conclusion**
+-> Probably want to filter (remove):
+- Indications with only 1 character (except if it is `?`)
+2. Indications not containing any letters or question mark (e. g. "..", "./", some numbers)
+
+### Convert to all lowercase
+```{r Convert indications to lowercase}
+cleaning_tmp_lower <- episodes_antibiotics %>%
+  mutate(IndicationRaw=Indication, IndicationCleaned=tolower(Indication), Indication=NULL)
+```
+
+### Remove unnecessary whitespaces (squish)
+```{r Remove extra whitespaces}
+cleaning_tmp_squished <- cleaning_tmp_lower %>%
+  mutate(IndicationCleaned=str_squish(IndicationCleaned))
+```
+
+### Remove non-sense indications
+Remove the following:
+- Indications with only 1 character (except if it is `?`)
+- Indications not containing any letters (e. g. "..", "./", some numbers)
+```{r Remove non-sense indications}
+cleaning_tmp_filtered <- cleaning_tmp_squished %>%
+  # Minimal length
+  filter(str_length(IndicationCleaned) > 1 | IndicationCleaned == "?") %>%
+  # Must contain at least one letter
+  filter(str_detect(IndicationCleaned, "[a-z\\?]"))
+```
+
+### [VIS] Show removed indications
+```{r Show removed indications, purl=FALSE}
+episodes_antibiotics %>%
+  select(ClusterID, PrescriptionID, Indication) %>%
+  anti_join(cleaning_tmp_filtered) %>%
+  count(Indication, sort = TRUE)
+```
+### Finish the cleaning
+```{r Rename temporary cleaning dataframe}
+e_a_1_cleaned <- cleaning_tmp_filtered
+```
+
+## EDA for cleaned indications
+```{r}
+tmp_4000 <- e_a_1_cleaned %>%
+  count(IndicationCleaned, sort=TRUE) %>%
+  head(4000)
+```
+
+## Investigating original data source for the labelling
+Clean the raw antibiotics table
+```{r}
+antibiotics_cleaned_indications <- antibiotics_tbl %>%
+  mutate(Indication=tolower(Indication)) %>%
+  mutate(Indication=str_squish(Indication)) %>%
+  filter(str_length(Indication) > 1 | Indication == "?") %>%
+  # Must contain at least one letter
+  filter(str_detect(Indication, "[a-z\\?]"))
+```
+
+

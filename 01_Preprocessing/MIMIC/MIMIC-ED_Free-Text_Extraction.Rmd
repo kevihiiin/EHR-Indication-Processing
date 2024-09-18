@@ -1,0 +1,68 @@
+---
+title: "Extract indication colum in MIMIC-ED"
+output: html_notebook
+---
+
+Use the true free-text column `chiefcomplaint` from the `triage.csv` file, which was taken at the start of a visit.
+It respresents the main complaint (and should reflect the reason medication was given).
+
+Processing idea: Filter ED visits for ones where ABX were given.
+
+Tasks:
+1. Filter for ABX prescriptions in `pyxis.csv`
+2. Join the ABX prescriptions with the triage data
+
+pysis |><| edstays (on: [subject_id, stay_id])
+
+
+## Load libraries and data
+Load libraries
+```{r}
+library(readr)
+library(dplyr)
+library(stringr)
+```
+
+Load data
+```{r}
+base_data_path <- "~/DPhil/Projects/EHR-Indication-Processing/99_Sandbox/MIMIC/physionet.org/files/mimic-iv-ed/2.2/ed/"
+
+# Medication
+phyxis <- read_csv(paste0(base_data_path, "pyxis.csv"), col_types = cols(
+  subject_id = col_double(),
+  stay_id = col_double(),
+  charttime = col_datetime(format = ""),
+  med_rn = col_double(),
+  name = col_character(),
+  gsn_rn = col_double(),
+  gsn = col_character()
+))
+
+# Triage
+triage <- read_csv(paste0(base_data_path, "triage.csv"), col_types = cols(
+  subject_id = col_double(),
+  stay_id = col_double(),
+  temperature = col_double(),
+  heartrate = col_double(),
+  resprate = col_double(),
+  o2sat = col_double(),
+  sbp = col_double(),
+  dbp = col_double(),
+  pain = col_character(),
+  acuity = col_double(),
+  chiefcomplaint = col_character()
+))
+
+```
+
+## Filter and Match
+Filter phyxis for ABX based on the GSN column
+
+```{r}
+phyxis %>%
+  filter(str_detect(etcdescription, "(?i)antibiotic"))
+
+```
+
+
+

@@ -1,0 +1,337 @@
+---
+title: "Population Statistics"
+output: html_notebook
+---
+
+Figures and tables for the results section, based on the raw, unprocessed and unlabelled data.
+
+## Load libraries and data
+```{r}
+library(tidyverse)
+library(lubridate) 
+```
+
+Specify data paths and global settings
+```{r}
+# --- Define the base paths
+base_data_path <- "../../00_Data/"
+
+# Final data path
+test_set_path <- paste(base_data_path, "data_sets", sep = "/")
+
+# Look up table path
+lut_path <- paste0(base_data_path, "LUTs/")
+
+# Max decimal places to round to
+round_decimals = 0
+```
+
+Load the data
+```{r}
+# --- EHR Data
+# Load the whole antibiotic prescription dataset
+antibiotic_prescription_oxford <-   read_csv(paste0(test_set_path, "/Oxford/Full_Oxford_Data_Set.csv"), col_types = cols(
+  ClusterID = col_double(),
+  PrescriptionID = col_character(),
+  Indication = col_character(),
+  PrescriptionDate = col_datetime(format = ""),
+  PrescriptionStatus = col_character(),
+  PrescriptionType = col_character(),
+  AdmissionDate = col_date(format = ""),
+  Drug = col_character(),
+  Formulation = col_character(),
+  Dose = col_double(),
+  DoseUnit = col_character(),
+  Frequency = col_character(),
+  Route = col_character(),
+  ScheduledStartDateTime = col_datetime(format = ""),
+  ScheduledStopDateTime = col_datetime(format = ""),
+  DurationEnteredByPrescriber = col_character(),
+  ReviewDateTime = col_datetime(format = ""),
+  FirstAdministrationDateTime = col_datetime(format = ""),
+  LastAdministrationDateTime = col_datetime(format = ""),
+  NumberOfDosesAdministered = col_double(),
+  SpecialInstructions = col_character(),
+  AntibioticsSource = col_character(),
+  LinkedBirthMonth = col_datetime(format = ""),
+  Age = col_double(),
+  WardStartDate = col_datetime(format = ""),
+  WardEndDate = col_datetime(format = ""),
+  Facility = col_character(),
+  Location = col_character()
+))
+
+antibiotic_prescription_banbury <-   read_csv(paste0(test_set_path, "/Banbury/Full_Banbury_Data_Set.csv"), col_types = cols(
+  ClusterID = col_double(),
+  PrescriptionID = col_character(),
+  Indication = col_character(),
+  PrescriptionDate = col_datetime(format = ""),
+  PrescriptionStatus = col_character(),
+  PrescriptionType = col_character(),
+  AdmissionDate = col_date(format = ""),
+  Drug = col_character(),
+  Formulation = col_character(),
+  Dose = col_double(),
+  DoseUnit = col_character(),
+  Frequency = col_character(),
+  Route = col_character(),
+  ScheduledStartDateTime = col_datetime(format = ""),
+  ScheduledStopDateTime = col_datetime(format = ""),
+  DurationEnteredByPrescriber = col_character(),
+  ReviewDateTime = col_datetime(format = ""),
+  FirstAdministrationDateTime = col_datetime(format = ""),
+  LastAdministrationDateTime = col_datetime(format = ""),
+  NumberOfDosesAdministered = col_double(),
+  SpecialInstructions = col_character(),
+  AntibioticsSource = col_character(),
+  LinkedBirthMonth = col_datetime(format = ""),
+  Age = col_double(),
+  WardStartDate = col_datetime(format = ""),
+  WardEndDate = col_datetime(format = ""),
+  Facility = col_character(),
+  Location = col_character()
+))
+
+# Episodes Dataset
+episodes_full <-  read_csv("~/shared/iord_extract_20220325/inpt_episode.csv", col_types = cols(
+    ClusterID = col_double(),
+    LinkedBirthMonth = col_datetime(),
+    LinkedSex  = col_factor()
+))
+
+# Exact Prescribing Consultant Information
+episode_speciality <- episodes_full %>%
+  distinct(ClusterID, EpisodeID, ConsultantMainSpecialtyCode)
+
+# Extract Demographics information (contains birth year & month, Sex)
+patient_demographics <- episodes_full %>%
+  distinct(ClusterID, LinkedSex)
+
+# --- LUTs
+nhs_speciality_lut <- read_csv(paste0(lut_path, "NHS_Main_Speciality_Code.csv"), show_col_types = FALSE)
+```
+
+## [Check] Duplicates
+No duplicates in the prescriptions data (ClusterID and PrescriptionID are primary keys)
+```{r}
+print("Oxford")
+# Print all prescriptions with multiple entries
+antibiotic_prescription_oxford %>%
+  group_by(ClusterID, PrescriptionID) %>%
+  filter(n() > 1)
+
+print("Banbury")
+# Print all prescriptions with multiple entries
+antibiotic_prescription_banbury %>%
+  group_by(ClusterID, PrescriptionID) %>%
+  filter(n() > 1)
+```
+-> Pass, all unique
+
+No duplicates within the dempographics information
+```{r}
+# Print all ClusterIDs with more than one entry
+patient_demographics %>%
+  group_by(ClusterID) %>%
+  filter(n() > 1)
+```
+-> Pass, no duplicated entries
+
+## [Result] Data Set Size
+Number of unique patients and prescriptions
+```{r}
+data_set_size <- function(data, location){
+  data %>%
+    summarise(
+      Location=location,
+      `Unique Patients`=length(unique(ClusterID)),
+      `Unqiue Prescriptions`=length(unique(PrescriptionID))
+    )
+}
+
+
+# Oxford
+data_set_size(antibiotic_prescription_oxford, "Oxford")
+
+# Banbury
+data_set_size(antibiotic_prescription_banbury, "Banbury")
+```
+
+## [Result] Unique indications
+```{r}
+unique_indications <- function(data, location){
+  unique_count <- data %>%
+    distinct(Indication) %>%
+    nrow()
+  print(paste0("Unique indications in ", location, ": ", unique_count))
+}
+
+# Oxford
+unique_indications(antibiotic_prescription_oxford, "Oxford")
+
+# Banbury
+unique_indications(antibiotic_prescription_banbury, "Banbury")
+```
+
+
+## [Result] Data Inclusion Dates
+Get the date ranges for our data
+```{r}
+
+date_ranges <- function(data, location){
+  data %>%
+    summarise(
+      Location=location,
+      `First Date`=min(PrescriptionDate),
+      `Last Date`=max(PrescriptionDate)
+    )
+}
+
+# Oxford
+date_ranges(antibiotic_prescription_oxford, "Oxford")
+
+# Banbury
+date_ranges(antibiotic_prescription_banbury, "Banbury")
+```
+
+## [Result] Most commonly prescribed ABX
+```{r}
+most_prescribed_abx <- function(data, location){
+  data %>%
+    count(Drug, name = "Count", sort = TRUE) %>%
+    mutate(Percentage=(Count/sum(Count) * 100) %>% round(round_decimals) %>% paste0("%")) %>%
+    rename(!!paste0("Drug ", location) := Drug)
+}
+
+# Oxford
+most_prescribed_abx(antibiotic_prescription_oxford, "Oxford") %>%
+  head(10) %>%
+  as.data.frame() %>%
+  knitr::kable()
+# Banbury
+most_prescribed_abx(antibiotic_prescription_banbury, "Banbury") %>%
+  head(10) %>%
+  as.data.frame() %>%
+  knitr::kable()
+```
+
+## [Result] Consultant main speciality
+```{r}
+consultant_main_speciality <- function(data, location){
+  data %>%
+    # Join the prescriptions with specialties
+    inner_join(episode_speciality, by = join_by(ClusterID, EpisodeID), relationship = "many-to-one") %>%
+    # Make the ConsultantMainSpecialityCode field human readable
+    left_join(nhs_speciality_lut, by = join_by(ConsultantMainSpecialtyCode == MainSpecialtyCode)) %>%
+    count(MainSpecialtyDescription, name = "Count", sort = TRUE) %>%
+    mutate(Percentage=(Count/sum(Count) * 100) %>% round(round_decimals) %>% paste0("%")) %>%
+    rename(!!paste0("MainSpecialtyDescription ", location) := MainSpecialtyDescription)
+}
+# Oxford
+consultant_main_speciality(antibiotic_prescription_oxford, "Oxford") %>%
+  head(10) %>%
+  as.data.frame() %>%
+  knitr::kable()
+
+# Banbury
+consultant_main_speciality(antibiotic_prescription_banbury, "Banbury") %>%
+  head(10) %>%
+  as.data.frame() %>%
+  knitr::kable()
+```
+
+## [Result] Demographic
+Age & Sex
+
+Calculate the age at first admission
+```{r}
+patient_age_demographics <- function(data, location){
+  # Get the demographics information for our subset
+  patient_demographics_filtered <- data %>%
+    # Join the prescriptions with demographics
+    inner_join(patient_demographics, by = join_by(ClusterID), relationship = "many-to-one") %>%
+    # Take only the first admission
+    arrange(ClusterID, AdmissionDate) %>%
+    distinct(ClusterID, .keep_all = TRUE) %>%
+    select(ClusterID, Age, LinkedSex)
+  
+  patient_demographics_filtered %>%
+    summarise(
+      Location=location,
+      `Age Median`=median(Age) %>% round(round_decimals),
+      `Age Q1`=quantile(Age, prob=c(.25)) %>% round(round_decimals),
+      `Age Q3`=quantile(Age, prob=c(.75)) %>% round(round_decimals),
+      `Age IQR`=IQR(Age) %>% round(round_decimals),
+      `Female %`=sum((LinkedSex=="F")/n()*100) %>% round(round_decimals),
+      `Female Count`=sum((LinkedSex=="F")) %>% round(round_decimals)
+      )
+    
+}
+
+# Oxford
+patient_age_demographics(antibiotic_prescription_oxford, "Oxford")
+
+# Banbury
+patient_age_demographics(antibiotic_prescription_banbury, "Banbury")
+```
+
+
+## [Result] Prescription Indications
+- Unique indications 
+- Top k most frequent ones
+- Top k least frequent ones
+- Misspellings
+
+Number of unique indications [duplicate]
+```{r}
+antibiotic_prescription_oxford %>%
+  summarise(
+    `Total Indications`=n(),
+    `Unique Indications`=length(unique(Indication))
+  )
+```
+
+Top k most common and least common indications
+```{r}
+top_k_common <- 100 # e.g. top 10 or top 100
+
+# Count the indications
+antibiotic_prescription_unique <- antibiotic_prescription_oxford %>%
+  count(Indication, sort = TRUE) %>%
+  mutate(Percentage=(n/sum(n) * 100) %>% round(round_decimals))
+
+antibiotic_prescription_unique %>%
+  head(top_k_common) %>%
+  rename(`Indication Common`=Indication) %>%
+  print()
+
+antibiotic_prescription_unique %>%
+  tail(top_k_common) %>%
+  rename(`Indication Uncommon`=Indication) %>%
+  print()
+
+antibiotic_prescription_unique %>%
+  filter(Indication %in% c("transplant pyelonephritis", "ludwig's angina", "deep neck infection")) %>%
+  print()
+```
+Misspellings
+```{r}
+antibiotic_prescription_unique %>%
+  filter(5 <= n, n <= 100) %>%  # Filter out the most common ones, for data governance reason keep a min of 5
+  sample_n(10) %>%  # Randomly sample 10, as they are currently ordered alphabetically
+  mutate(
+    n=case_when(
+      n < 10 ~ "<10",
+      TRUE ~ as.character(n)
+      ),
+      Percentage=case_when(
+        Percentage == 0 ~ "<1%",
+        TRUE ~ paste0(Percentage, "%")
+      )
+    ) %>%
+  as.data.frame() %>%
+  knitr::kable()
+```
+-> Just find random ones. Spesis instead of sepsis is common.
+
+

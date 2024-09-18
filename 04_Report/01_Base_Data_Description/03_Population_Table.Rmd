@@ -1,0 +1,75 @@
+---
+title: "Population Baseline Table"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(gtsummary)
+
+# source("../00_Utils/helper_functions.R")
+```
+
+## Parse Data
+```{r}
+full_oxford <- read_csv("/home/kevinyuan/EHR-Indication-Processing/00_Data/data_sets/Oxford/Full_Oxford_Data_Set.csv")
+full_banbury <- read_csv("/home/kevinyuan/EHR-Indication-Processing/00_Data/data_sets/Banbury/Full_Banbury_Data_Set.csv")
+```
+
+```{r}
+patient_info <- read_csv("~/shared/iord_extract_20220325/inpt_episode.csv", col_types = cols(
+    ClusterID = col_double(),
+  )) %>%
+  select(ClusterID, LinkedSex, EthnicGroupCode) %>%
+  distinct(ClusterID, .keep_all = TRUE)
+```
+
+```{r}
+full_oxford_info <- full_oxford %>%
+  left_join(patient_info, by = "ClusterID")
+
+full_banbury_info <- full_banbury %>%
+  left_join(patient_info, by = "ClusterID")
+
+```
+
+```{r}
+oxford_info <- full_oxford_info %>%
+  select(ClusterID, Age, LinkedSex, EthnicGroupCode) %>%
+  mutate("Location" = "Oxford") %>%
+  distinct(ClusterID, .keep_all = TRUE)
+
+banbury_info <- full_banbury_info %>%
+  select(ClusterID, Age, LinkedSex, EthnicGroupCode) %>%
+  mutate("Location" = "Banbury") %>%
+  distinct(ClusterID, .keep_all = TRUE)
+
+total_info <- bind_rows(oxford_info, banbury_info) %>%
+  mutate(EthnicGroupCode = case_when(
+    EthnicGroupCode %in% c('A', 'B', 'C') ~ 'White',
+    EthnicGroupCode %in% c('D', 'E', 'F', 'G') ~ 'Mixed',
+    EthnicGroupCode %in% c('H', 'J', 'K', 'L') ~ 'Asian',
+    EthnicGroupCode %in% c('M', 'N', 'P') ~ 'Black',
+    EthnicGroupCode %in% c('R', 'S') ~ 'Other',
+    TRUE ~ 'Unknown'
+  ))
+```
+
+
+## Population Crosstable using gtsummary
+
+```{r}
+summary_tbl <- total_info %>%
+  select(Age, LinkedSex, EthnicGroupCode, Location) %>%
+  tbl_summary(by = Location)
+
+summary_tbl
+```
+
+```{r}
+# Export to word
+summary_tbl %>%
+  as_gt() %>%
+  gt::gtsave(filename = "population_table.tex")
+  
+```

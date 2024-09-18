@@ -1,0 +1,32 @@
+# Development environment
+jupyter
+ipykernel
+ipywidgets
+widgetsnbextension
+# Standard data manipulation
+pandas
+numpy
+xlsxwriter
+openpyxl
+# Misc
+tqdm
+jinja2  # Templating enginge for the prompts
+python-dotenv # For loading environment variables
+# Plotting
+seaborn
+matplotlib
+plotnine
+# Model evaluation
+scikit-learn
+# ML Libraries
+tiktoken # Estimate token usage
+torch
+torchvision
+torchaudio
+transformers[torch]
+transformers # Install the git version to get llama support
+datasets
+sacremoses
+xgboost # Baseline
+regex # Regex baseline
+openai # For OpenAI GPT models

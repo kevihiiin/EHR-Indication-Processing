@@ -1,0 +1,93 @@
+---
+title: "Upsample to original dataset"
+output: html_notebook
+---
+Apply the classified indications back to the original dataset
+
+## Load libraries and data
+```{r}
+library(tidyverse)
+```
+
+```{r}
+data_base_path <- "00_Data/"
+
+rxid_with_admission_path <- paste0(data_base_path, "RxID_within_admissions_all.csv")
+predicted_labels_path <- paste0(data_base_path, "Indications_unique_classified.csv")
+
+# full_indication <- read_csv(full_indication_path, show_col_types = FALSE) %>%
+#   relocate(ClusterID, PrescriptionID, Indication)
+full_abx_prescriptions <- read_csv("/home/shared/iord_extract_20220325/antibiotic_prescriptions.csv", col_types = cols(
+  Clusterid = col_double(),
+  PrescriptionID = col_character(),
+  PrescriptionDate = col_datetime(format = ""),
+  PrescriptionStatus = col_factor(),
+  PrescriptionType = col_factor(),
+  AdmissionDate = col_date(format = ""),
+  Drug = col_factor(),
+  Formulation = col_factor(),
+  Dose = col_double(),
+  DoseUnit = col_character(),
+  Frequency = col_character(),
+  Route = col_factor(),
+  Indication = col_character(),
+  ScheduledStartDateTime = col_datetime(format = ""),
+  ScheduledStopDateTime = col_datetime(format = ""),
+  DurationEnteredByPrescriber = col_character(),
+  ReviewDateTime = col_datetime(format = ""),
+  FirstAdministrationDateTime = col_datetime(format = ""),
+  LastAdministrationDateTime = col_datetime(format = ""),
+  NumberOfDosesAdministered = col_double(),
+  SpecialInstructions = col_character(),
+  AntibioticsSource = col_factor()
+)) %>%
+  relocate(ClusterID=Clusterid, PrescriptionID, Indication)
+
+rxid_with_admission <- read_csv(rxid_with_admission_path, show_col_types = FALSE) %>%
+  distinct(ClusterID, PrescriptionID)
+
+```
+
+## Filter for indications with followup data & export
+Filter with Qingze's list & export the unique data to be classified
+```{r}
+# Filter
+abx_prescriptions <- full_abx_prescriptions %>%
+  # Cleanup
+  drop_na(Indication) %>%
+  mutate(Indication=tolower(Indication)) %>%
+  distinct(ClusterID, PrescriptionID, Indication) %>%
+  # Limit to Qingze's list of prescriptions
+  inner_join(rxid_with_admission, by = c("ClusterID", "PrescriptionID"))
+
+# Export
+indications_unique_path <- paste0(data_base_path, "Indications_unique.csv")
+
+abx_prescriptions %>%
+  distinct(Indication) %>%
+  write_csv(indications_unique_path)
+```
+
+## Predict
+Run inference on the exported file.
+Import the predictions file as "Indications_unique_classified.csv"
+
+## Match back to the original dataset
+Load the LUT
+```{r}
+indications_unique_classified_path <- paste0(data_base_path, "Indications_unique_classified.csv")
+
+indication_label_lut <- read_csv(indications_unique_classified_path, show_col_types = FALSE)
+```
+
+
+```{r}
+abx_prescriptions_classified <- abx_prescriptions %>%
+  # Join back with the predicted labels. Classify the whole thing
+  left_join(indication_label_lut, by="Indication")
+
+rx_with_labels <- paste0(data_base_path, "RxID_with_labeles.csv")
+abx_prescriptions_classified %>%
+  write_csv(rx_with_labels)
+```
+

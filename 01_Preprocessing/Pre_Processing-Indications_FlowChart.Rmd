@@ -1,0 +1,354 @@
+---
+title: "Evaluate Inclusion Criteria"
+output: html_notebook
+---
+Of the used 1.1M entries, only a subset has subsequent hospital episode (in patient) information. Check the inclusion criteria to exclude as little samples as possible
+
+## Load libraries and data
+```{r}
+library(tidyverse)
+library(lubridate) 
+```
+
+Load the data
+```{r}
+data_base_path <- "../00_Data/"
+
+# Specify output sub folder
+output_path <- paste(data_base_path, "test_set", sep = "/")
+
+rxid_with_admission_path <- paste0(data_base_path, "RxID_within_admissions_all.csv")
+
+# Load the whole antibiotic prescription dataset, will throw errors due to wrong data types
+full_indication <- read_csv("/home/shared/iord_extract_20220325/antibiotic_prescriptions.csv", col_types = cols(
+  Clusterid = col_double(),
+  PrescriptionID = col_character(),
+  PrescriptionDate = col_datetime(format = ""),
+  PrescriptionStatus = col_factor(),
+  PrescriptionType = col_factor(),
+  AdmissionDate = col_date(format = ""),
+  Drug = col_factor(),
+  Formulation = col_factor(),
+  Dose = col_double(),
+  DoseUnit = col_character(),
+  Frequency = col_character(),
+  Route = col_factor(),
+  Indication = col_character(),
+  ScheduledStartDateTime = col_datetime(format = ""),
+  ScheduledStopDateTime = col_datetime(format = ""),
+  DurationEnteredByPrescriber = col_character(),
+  ReviewDateTime = col_datetime(format = ""),
+  FirstAdministrationDateTime = col_datetime(format = ""),
+  LastAdministrationDateTime = col_datetime(format = ""),
+  NumberOfDosesAdministered = col_double(),
+  SpecialInstructions = col_character(),
+  AntibioticsSource = col_factor()
+)) %>%
+  relocate(ClusterID=Clusterid, PrescriptionID, Indication)
+
+# Episode information (contains birth year & month)
+patient_birthdate <- read_csv("~/shared/iord_extract_20220325/inpt_episode.csv", col_types = cols(
+    ClusterID = col_double(),
+    LinkedBirthMonth = col_datetime()
+  )) %>%
+  distinct(ClusterID, LinkedBirthMonth)
+
+
+# Hospital Site information
+ward_stay <- read_csv("~/shared/iord_extract_20220325/ward_stay.csv", col_types = cols(
+  ClusterID = col_double(),
+  WardStartDate = col_datetime(format = ""),
+  WardEndDate = col_datetime(format = ""),
+  WardName = col_factor(),
+  Building = col_factor(),
+  Facility = col_factor()
+))
+
+
+# Prescriptions with admission (previously joined)
+rxid_with_admission <- read_csv(rxid_with_admission_path, show_col_types = FALSE) %>%
+  distinct(ClusterID, EpisodeID, PrescriptionID)
+```
+
+Obtain & set some general parameters
+```{r}
+# Columns for the original labelled data
+label_columns <- c("urinary", "respiratory", "abdominal", "neurological", "skin_soft_tissue", "ent", "orthopaedic", "other", "no_specific_source", "prophylaxis", "procedural", "immunosuppression", "viral", "uncertainty")
+
+# label_columns <- tail(colnames(consensus_labels), -2)
+```
+
+Some general overview of the avaiable wards
+```{r}
+ward_stay$Facility %>%
+  summary
+```
+
+Calculate a random seed from a string. Function taken from:
+https://rdrr.io/cran/TeachingDemos/src/R/char2seed.R
+```{r}
+char2seed <- function(x,set=TRUE,...){
+
+	tmp <- c(0:9,0:25,0:25)
+	names(tmp) <- c(0:9,letters,LETTERS)
+
+	x <- gsub("[^0-9a-zA-Z]","",as.character(x))
+
+	xsplit <- tmp[ strsplit(x,'')[[1]] ]
+
+	seed <- sum(rev( 7^(seq(along=xsplit)-1) ) * xsplit)
+        seed <- as.integer( seed %% (2^31-1) )
+
+	if(set){
+		set.seed(seed,...)
+		return(invisible(seed))
+	} else {
+		return(seed)
+	}
+}
+
+# Obtain a random seed
+random_seed_numeric <- char2seed("NLP with Qingze and Chang is really fun!", set=FALSE)
+```
+
+## Preprocessing
+### Clean the indications
+1. Convert to lower case
+2. Remove unnecessary whitespaces (trainling and leading whitespaces and double whitespaces)
+3. Remove single character indications (except for just ?)
+4. Remove words that don't contain letters or question marks (just numbers or just special characters)
+```{r}
+full_indication_cleaned <- full_indication%>%
+  # Convert the indications to lower case
+  mutate(Indication=tolower(Indication)) %>%
+  # Squish the string (remove unnecessary whitespaces)
+  mutate(Indication=str_squish(Indication)) %>%
+  # Set minimal length to one (except for ?)
+  mutate(NonsenseIndication=!(str_length(Indication) > 1 | Indication == "?")) %>%
+  # Must contain at least one letter
+  mutate(NonsenseIndication=(NonsenseIndication | !(str_detect(Indication, "[a-z\\?]"))))
+```
+
+### Join RxIDs with inpatient episodes
+```{r}
+indication_w_admission <- full_indication_cleaned %>%
+  inner_join(rxid_with_admission, by = c("ClusterID", "PrescriptionID")) %>%
+  drop_na(Indication)
+
+indication_wo_admission <- full_indication_cleaned %>%
+  anti_join(rxid_with_admission, by = c("ClusterID", "PrescriptionID"))
+```
+
+```{r}
+indication_w_admission %>%
+  nrow()
+
+indication_wo_admission %>%
+  nrow()
+```
+
+#### Investigate potential linkage error
+```{r}
+indication_wo_admission %>%
+  summary()
+```
+-> Looks fine. 58 199 cases don't have admission dates, why don't the other ~50k cases link to an admission?
+
+### Filter for patients >= 16 years old
+We are only looking into adult cases
+```{r}
+lower_age_limit <- 16  # In years, inclusive filtering
+indication_w_admission_filtered <- indication_w_admission %>%
+  inner_join(patient_birthdate, by = join_by(ClusterID)) %>%
+  mutate(Age = as.numeric(PrescriptionDate - LinkedBirthMonth, unit="days")/365.25) %>%
+  filter(Age >= lower_age_limit)
+
+sprintf("Number of rows removed: %i", nrow(indication_w_admission) - nrow(indication_w_admission_filtered))
+```
+-> The admission data was already filtered for adults at admission time. We filter for adults at prescription time here
+
+
+## Seperate the sites in the dataset
+The database contains multiple sites, separate them
+
+### Add Location to Facilities
+Quick look at available locations before creating the mapping table
+```{r}
+ward_stay$Facility %>%
+  summary()
+```
+-> Ignore empty string
+
+Map the ward stays and remove ones not in the list (namely empty locations)
+```{r}
+# Mapping table, make sure all the centres appear.
+# Locations not in this table will be removed from the output
+location_map <- tibble(Facility=c("John Radcliffe", "Churchill", "Horton", "OUH", "NOC"), 
+                       Location=factor(c("Oxford", "Oxford", "Banbury", "Oxford", "Oxford"))
+                       )
+
+# Table to use for joins
+cluster_location_tbl <- ward_stay %>%
+  inner_join(location_map, by = "Facility") %>%
+  select(ClusterID, WardStartDate, WardEndDate, Facility, Location)
+
+cluster_location_tbl %>%
+  count(Facility, Location, sort = TRUE)
+```
+
+### Adaptive Inclusion Window Matching
+Allow for increasing inclusion window sizes, let the inclusion time (fuzzy date)
+expand but choose the smallest time difference.
+
+Join the indication data with the ward stays. 
+This will result in a many-to-many join, and needs to be filtered.
+Add `StartDiffDays` and `EndDiffDays` to indicate the location of the prescription time
+relative to the ward stay window.
+```{r}
+indication_w_admission_ward <- indication_w_admission_filtered %>%
+  # Join the indications, this should capture almost all of the indications
+  left_join(cluster_location_tbl, by = join_by(ClusterID), relationship = "many-to-many") %>%
+  # Calculate location of the admission within the ward window
+  # mutate(StartDiffDays=difftime(PrescriptionDate, WardStartDate, units="days"),
+  # EndDiffDays=difftime(WardEndDate, PrescriptionDate, units="days")
+  mutate(StartDiffDays=as.numeric(PrescriptionDate - WardStartDate, units="days"),
+  EndDiffDays=as.numeric(WardEndDate - PrescriptionDate, units="days")
+         )
+
+tmp_count <- indication_w_admission_ward %>% nrow()
+
+# Remove entries (patients) which didn't have ANY ward stay entries
+# We expect only a handful of such cases
+indication_w_admission_ward <- indication_w_admission_ward %>%
+  filter(!is.na(Facility))
+
+sprintf("Number of unmatched cases removed: %i", tmp_count - nrow(indication_w_admission_ward))
+```
+
+Adaptive filtering function
+```{r}
+# Function to filter for the closest (best) match
+adaptive_filtering <- function(input_df, max_fuzzy_day, return_all=FALSE){
+  # Filter to this max fuzzyness
+  input_df_limited <- input_df %>%
+    filter(StartDiffDays >= -max_fuzzy_day, EndDiffDays >= -max_fuzzy_day)
+
+  
+  # Match to closest ward stay it is within.
+  # 1. Assign "priority". If a duration is negative (outside), it lowers the priority
+  # 2. Calculate minimum of absolute distances (start and end)
+  # 3. Sort by priority & distance ascending, pick first entry
+  input_df_limited_sorted <- input_df_limited %>%
+    # Assign priority & get min(abs(), abs()) distance
+    mutate(Priority=if_else(StartDiffDays<0, 1, 0) + if_else(EndDiffDays<0, 1, 0),
+           TimeDiff=pmin(abs(StartDiffDays), abs(EndDiffDays))
+           ) %>%
+    # Group by prescription & then sort by priority and difference
+    group_by(ClusterID, PrescriptionID) %>%
+    arrange(Priority, TimeDiff, .by_group = TRUE)
+  
+  # Return all the entries, just limited and sorted
+  if(return_all){
+    return(input_df_limited_sorted)
+  }
+  
+  # Pick the first row per group
+  input_df_limited_sorted %>%
+    slice(1) %>%
+    ungroup() %>%
+    select(-StartDiffDays, -EndDiffDays, -Priority, -TimeDiff)
+}
+```
+
+
+Plot the time difference and number of missing cases vs error rate
+```{}
+min_fuzzy_day <- 0
+max_fuzzy_day <- 15
+
+# Prefilter data to remove the bulk of entries (speedup)
+tmp_indication_ward_data <- indication_w_admission_ward %>%
+  filter(StartDiffDays >= -max_fuzzy_day, EndDiffDays >= -max_fuzzy_day)
+
+# Results tibble
+fuzzy_investigation_tbl <- tibble(
+  fuzzy_day = numeric(),
+  num_matches = numeric(),
+  num_error = numeric(),
+)
+
+# Iterate through the days
+for (fuzzy_day in c(min_fuzzy_day:max_fuzzy_day)) {
+  # Print some information
+  print(sprintf("Calculating for `fuzzy_date`: %i", fuzzy_day))
+  
+  # Run the limiting and prioritising function
+  tmp_indication_ward_data_limited_sorted <- adaptive_filtering(tmp_indication_ward_data, fuzzy_day, return_all = TRUE)
+  
+  # Get the number of matches and errors and write back to the table
+  num_matches = tmp_indication_ward_data_limited_sorted %>%
+    distinct(ClusterID, PrescriptionID) %>%
+    nrow()
+
+  num_error = tmp_indication_ward_data_limited_sorted %>%
+    filter(TimeDiff <= first(TimeDiff) + 0.04) %>%  # Get the ones that are less than an hour apart
+    filter(length(unique(Location)) > 1) %>%
+    distinct(ClusterID, PrescriptionID) %>%
+    nrow()
+  
+  # Write to results data frame
+  fuzzy_investigation_tbl <- fuzzy_investigation_tbl %>%
+    add_row(fuzzy_day=fuzzy_day,
+            num_matches=num_matches,
+            num_error=num_error)
+}
+
+fuzzy_investigation_tbl
+```
+
+```{}
+fuzzy_investigation_tbl %>%
+  pivot_longer(cols = c(num_matches, num_error)) %>%
+  ggplot(aes(x=fuzzy_day, y=(value), colour=name)) + 
+    geom_line() +
+    xlab("Fuzzy Day") +
+    ylab("Count")
+```
+
+Print the table
+```{}
+fuzzy_investigation_tbl
+```
+
+#### Apply to dataset for further processing
+```{r}
+indication_w_admission_site <- adaptive_filtering(indication_w_admission_ward, max_fuzzy_day = 2)
+```
+
+##### [Results] Number of (unique) Indications
+Print data set statistics (number of samples per site, number of unique indications)
+```{r}
+indication_oxford <- indication_w_admission_site %>%
+  filter(Location=="Oxford")
+
+indication_banbury <- indication_w_admission_site %>%
+  filter(Location=="Banbury")
+
+sprintf("Oxford indications: %i (total), %i (unique)", nrow(indication_oxford), n_distinct(indication_oxford$Indication))
+
+sprintf("Banbury indications: %i (total), %i (unique)", nrow(indication_banbury), n_distinct(indication_banbury$Indication))
+```
+
+##[Results] How many indications to start with
+```{r}
+indication_oxford %>%
+  filter(NonsenseIndication) %>%
+  nrow()
+
+indication_banbury %>%
+  filter(NonsenseIndication) %>%
+  nrow() %>%
+  print()
+```
+
+

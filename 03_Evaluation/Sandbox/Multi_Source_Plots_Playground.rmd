@@ -1,0 +1,160 @@
+---
+title: "Multi Source Plots Playground"
+output: html_notebook
+---
+
+# Multi Source Plots Playground
+Show the overlap between multi-sources, comparing predicted & true labels
+
+## Load data and libraries
+```{r}
+# Install missing libraries
+#install.packages("ggupset")
+# install.packages("ggpattern")
+
+# Load libraries
+library(tidyverse)
+library(ggupset)
+library(ggpattern)
+```
+
+Load the data
+Set indicies, set multi-source flags, join the two dataframes by columns
+```{r}
+# Set the paths
+data_path = "../00_Data/export"
+
+model_name = "Bio_ClinicalBERT"
+
+bert_predictions_path = sprintf("%s/%s_predictions.csv", data_path, model_name)
+bert_true_path = sprintf("%s/%s_true_labels.csv", data_path, model_name)
+
+# Load the files
+bert_true_tbl <- read_csv(bert_true_path, show_col_types = FALSE) %>%
+  mutate(across(where(is.numeric), as.logical)) %>%
+  select(-uncertainty)  
+
+bert_predictions_tbl <- read_csv(bert_predictions_path, show_col_types = FALSE) %>%
+    mutate(across(where(is.numeric), as.logical)) %>%
+  select(-uncertainty)  
+
+# Get indication list
+indication_list <- colnames(bert_predictions_tbl)
+```
+
+## Preprocess the data
+```{r}
+# Prefix the prediction columns
+bert_predictions <- bert_predictions_tbl %>%
+  rename_with(~ paste0("pred_", .x))
+
+# Check for multi-source indications
+bert_true <- bert_true_tbl %>%
+  rowwise() %>%
+  mutate(is_multisource=sum(c_across(where(is.logical))) > 1) %>%
+  ungroup()
+
+bert_predictions <- bert_predictions %>%
+  rowwise() %>%
+  mutate(pred_is_multisource=sum(c_across(where(is.logical))) > 1) %>%
+  ungroup()
+
+# Join the two DFs
+multi_indications <- bert_true %>%
+  # Move raw indications to the index | later this could be patient IDs
+  remove_rownames() %>%
+  column_to_rownames(var = "IndicationRaw") %>%
+  # Join with the predicted labels
+  bind_cols(bert_predictions)
+```
+
+## Data Processing
+Count the number of overlaps in the groups
+
+```{r}
+# Get indication list
+vis_data <- multi_indications %>%
+  # Filter for multisource & only true label data
+  filter(is_multisource) %>%
+  select(-starts_with("pred_"), -is_multisource) %>%
+  # Reshape the data
+  as_tibble(rownames = "IndicationRaw") %>%
+  gather(Indication, Value, -IndicationRaw) %>%
+  filter(Value) %>%
+  group_by(IndicationRaw) %>%
+  summarize(Indication = list(Indication))
+
+vis_data
+```
+
+```{r}
+# Get indication list
+vis_data2 <- multi_indications %>%
+  # Filter for multisource & only true label data
+  filter(pred_is_multisource) %>%
+  select(starts_with("pred_"), -pred_is_multisource) %>%
+  rename_with(~ str_remove( .x, "pred_")) %>%
+  # Reshape the data
+  as_tibble(rownames = "IndicationRaw") %>%
+  gather(Indication, Value, -IndicationRaw) %>%
+  filter(Value) %>%
+  group_by(IndicationRaw) %>%
+  summarize(Indication = list(Indication)) %>%
+  # Add marker
+  mutate(predicted=TRUE)
+
+vis_data2
+```
+
+```{r}
+vis_data_full <- vis_data %>%
+  mutate(predicted=FALSE) %>%
+  bind_rows(vis_data2)
+vis_data_full
+```
+
+## Plot as upset plot
+Plot the given dataset
+```{r}
+vis_data_full %>%
+    ggplot(aes(x=Indication)) +
+    geom_bar(aes(fill=predicted), position = position_dodge(preserve = "single")) +
+scale_x_upset(n_intersections = 20)
+```
+
+## Full custom plot
+Create dummy data
+```{r}
+ind_a <- "Respiratory"
+ind_b <- "Urinary"
+
+source_a <- "True Label"
+source_b <- "Predicted Label"
+
+expl_data <- tibble(
+  Indication = list(c(ind_a, ind_b), c(ind_a, ind_b), c(ind_a, ind_b)),
+  Dummy = c("One", "One", "One"),
+  Source = c(source_a, source_b, source_b),
+  Size = c(3, 2, -2),
+  IsOverlapping = c(TRUE, TRUE, FALSE)
+)
+expl_data
+```
+Upset version
+```{r}
+ggplot(expl_data, aes(x=Indication)) +
+  geom_col(aes(y=Size, fill=Source,  alpha=IsOverlapping, group=Source), position="dodge") +
+  scale_alpha_discrete(range = c(0.4, 1.0)) +
+  scale_x_upset(n_intersections = 20)
+```
+
+With shaded area
+```{r}
+ggplot(expl_data, aes(x=Indication)) +
+  geom_col_pattern(aes(y=Size, fill=Source,  pattern_density=IsOverlapping, group=Source), 
+                   pattern_fill = "white",
+                   pattern_colour = "white",
+                   position="dodge") +
+  scale_pattern_density_manual(values = c("TRUE" = 0.0, "FALSE"=0.1)) +
+  scale_x_upset(n_intersections = 20)
+```

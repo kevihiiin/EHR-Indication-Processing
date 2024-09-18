@@ -1,0 +1,840 @@
+---
+title: "Labelled Data Overview"
+output: html_notebook
+---
+
+Plots and figures to describe the (labelled data), basically exploring the indications.
+
+## Load libraries and data
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(ggupset)
+# library(ggpattern)
+library(ggrepel)
+library(cowplot)
+library(scales)
+
+source("../00_Utils/helper_functions.R")
+```
+
+Load data
+
+```{r}
+# --- Training Data
+training_oxford <- read_csv(paste0(publication_ready_path, "/training_oxford_2023-08-23.csv"))
+training_oxford_counts <- read_csv(paste0(publication_ready_path, "/full_oxford_counts_2023-08-23.csv"))
+
+# Join the counts with the indications data
+training_oxford <- training_oxford %>%
+  clean_category_names %>%
+  inner_join(training_oxford_counts, by = join_by(Indication), relationship = "one-to-one")
+
+# --- Test Data
+testing_oxford <- read_csv(paste0(publication_ready_path, "/testing_oxford_2023-08-23.csv")) %>%
+  clean_category_names()
+testing_banbury <- read_csv(paste0(publication_ready_path, "/testing_banbury_2023-08-23.csv")) %>%
+  clean_category_names()
+```
+
+Set overall theme
+
+```{r}
+theme_set(theme_light())
+theme_update(plot.title = element_text(hjust = 0.5))
+```
+
+## Training Data
+### Single Category Plot
+
+Plot the occurrence of single categories. Create two versions, one distinct occurrences & one scaled to the whole dataset.
+
+#### Data Processing
+TODO: CHECK THE GLOBAL COUNT, make it #prescriptions, don't just add up! Same for global distinct,
+the # should be 4000
+1.  Reshaping to correct format
+2.  Count the occurrences (create one version with scaled up counts)
+3.  Calculate percentages in regards to total counts and for uncertainty, relative to the base indication
+
+
+```{r}
+baseline_n_distinct <- nrow(training_oxford)
+baseline_n_global <- sum(training_oxford$Count)
+
+sprintf("Number of distinct indications: %i", baseline_n_distinct)
+sprintf("Number of all indications: %i", baseline_n_global)
+
+category_stats <- training_oxford %>%
+  # --- Reshape to long format
+  # Reshape to longer format, keep uncertainty as separate column
+  pivot_longer(!!source_categories, names_to = "Source", values_to = "Present") %>%
+  # Remove all non-specified sources
+  mutate(
+    across(c(Uncertainty, Present),
+           ~as.logical(.x)
+         )) %>%
+  filter(Present) %>%
+  
+  # --- Count
+  # Count (scale up and keep distinct count)
+  group_by(Source) %>%
+  summarise(n_global = sum(Count), 
+            n_distinct = n(), 
+            n_global_uncertainty = sum(Count[Uncertainty]),
+            n_distinct_uncertainty = length(Count[Uncertainty]),
+            .groups = "drop") %>%
+  
+  # --- Calculate percentages
+  mutate(
+    # Sources
+    pct_global = n_global/baseline_n_global*100,
+    pct_distinct = n_distinct/baseline_n_distinct*100,
+    # Uncertainty
+    pct_global_uncertainty = n_global_uncertainty/baseline_n_global*100,
+    pct_distinct_uncertainty = n_distinct_uncertainty/baseline_n_distinct*100,
+    # Uncertainty relative to non uncertain ones
+    pct_global_uncertainty_relative = n_global_uncertainty/n_global*100,
+    pct_distinct_uncertainty_relative = n_distinct_uncertainty/n_distinct*100,
+  )
+```
+Variable explanation:
+Scaled = Scaled to the whole datase (multiply distinct with count)
+- n_global: Scaled number of occurrences
+- n_distinct: Number of occurrences
+- n_global_uncertainty: Scaled number of occurrences with uncertainty
+- n_distinct_uncertainty: Number of occurrences with uncertainty
+- pct_global: Percentage of scaled occurrences
+- pct_distinct: Percentage of occurrences
+- pct_global_uncertainty: Percentage of scaled occurrences with uncertainty relative to all global sources
+- pct_distinct_uncertainty: Percentage of occurrences with uncertainty relative to all distinct sources
+- pct_global_uncertainty_relative: Percentage of scaled occurrences with uncertainty relative to the category
+- pct_distinct_uncertainty_relative: Percentage of occurrences with uncertainty relative to the category
+
+### [Result] Ground truth labels: Most common sources & uncertainty
+```{r}
+category_stats %>%
+  # Round every column that is of type numeric
+  mutate(across(where(is.numeric), ~round(., 0))) %>%
+  arrange(-n_global) %>%
+  select(Source, n_global, pct_global)
+```
+```{r}
+category_stats %>%
+  # Round every column that is of type numeric
+  mutate(across(where(is.numeric), ~round(., 0))) %>%
+  arrange(-pct_global_uncertainty_relative) %>%
+  select(Source, pct_global_uncertainty_relative)
+```
+
+#### Tests
+Run some sense checks
+
+```{r}
+# Custom assert function, prints inputs on error and applies supplied equals function
+assert <- function(message, equals_function, left, right) {
+  cat(paste0(message, ": "))
+      
+  if (equals_function(left, right)){
+    print("Passed")
+  } else {
+    sprintf("Failed: %s vs %s", left, right)
+  }
+}
+```
+
+Compare summarised numbers and define tests
+
+```{r}
+# --- Raw numbers
+# -- Global Numbers
+# Scaled number of sources (excluding uncertainty)
+num_indications_global <- training_oxford %>%
+  # Scale indication sources by count, keep only the mutated columns
+  transmute(across(!!source_categories, ~ .x * Count)) %>%
+  # Calcluate sum over all cells
+  unlist() %>%
+  sum()
+
+# Scaled uncertainty numbers
+num_uncertainty_global <- training_oxford %>%
+  filter(Uncertainty == 1) %>%
+  summarise(across(!!source_categories, ~sum( .x * Count))) %>%
+  unlist() %>%
+  sum()
+
+# passed
+assert("Global number of indications",
+       \(x,y) x==y,  # Specify lambda function to compare
+       num_indications_global,
+       sum(category_stats$n_global)
+)
+
+# passed
+assert("Global number of uncertainty",
+       \(x,y) x==y, 
+       num_uncertainty_global,
+       sum(category_stats$n_global_uncertainty)
+)
+
+# -- Distinct numbers
+num_indications_distinct <- training_oxford %>%
+  select(!!source_categories) %>%
+  summarise(across(everything(), ~ sum(.)))
+
+num_uncertainty_distinct <- training_oxford %>%
+  filter(Uncertainty == 1) %>%
+  select(!!source_categories) %>%
+  unlist() %>%
+  sum()
+
+# passed
+assert("Distinct number of indications",
+       \(x,y) all_equal(x,y, convert = TRUE),
+       num_indications_distinct,
+       category_stats[c("Source", "n_distinct")] %>% pivot_wider(names_from = Source, values_from = n_distinct)
+)
+
+
+# passed
+assert("Distinct numbers of uncertainty",
+       \(x,y) x==y,
+       num_uncertainty_distinct,
+       sum(category_stats$n_distinct_uncertainty)
+)
+
+# --- Percentages
+## Only check percentages for the non-uncertainty values
+# passed
+print("Global percentages: Should add up to 100%")
+category_stats %>%
+  summarise(
+    `% Global Check` = sum(pct_global),
+    `% Distinct Check` = sum(pct_distinct),
+    `% Uncertainty Global Check` = sum(pct_global_uncertainty),
+    `% Uncertainty Distinct Check` = sum(pct_distinct_uncertainty),
+  ) %>%
+  print()
+```
+
+-\> All Passing
+
+#### [Plot] Distinct
+
+Over-plotting two bars, absolute values are correct:
+
+```{r}
+plot_category_frequency <- function(input_data, scope) {
+  if (scope != "global" & scope != "distinct") {
+    stop(sprintf("Option \"%s\" not recognised. Choose either \"global\" or \"distinct\".", scope))
+  }
+  
+  pct_sources = sprintf("pct_%s", scope) %>% sym()
+  pct_sources_uncertainty = sprintf("pct_%s_uncertainty", scope) %>% sym()
+  pct_sources_uncertainty_relative = sprintf("pct_%s_uncertainty_relative", scope) %>% sym()
+  
+  nudge_y = 1.2
+  
+  plt <- input_data %>%
+    ggplot(aes(x=reorder(Source, -!!pct_sources))) +
+      # --- Data Points
+      # Bar Sources
+      geom_bar(aes(y=!!pct_sources, fill="blue"),
+               stat = "identity", position = "dodge"
+               ) +
+      # Bar Uncertainty
+      geom_bar(aes(y=!!pct_sources_uncertainty, fill = "red"),
+               stat = "identity", position = "dodge"
+               ) +
+      # Overall group percentage
+      geom_text(mapping = aes(y=!!pct_sources, label=sprintf(!!pct_sources, fmt = '%#.1f')),
+                nudge_y = nudge_y + 1,
+      ) +
+      # Uncertainty Percentage
+      geom_text(aes(y=!!pct_sources_uncertainty, label=sprintf(!!pct_sources_uncertainty_relative, fmt = '%#.1f')),
+                nudge_y = nudge_y,
+                ) +
+    
+      # --- Guides and other visual candy
+      scale_x_discrete(guide = guide_axis(angle = 45)) +
+      labs(x = "",
+           y = "Relative Frequency [%]",
+           title = sprintf("%s: Category Frequency", tools::toTitleCase(scope)),
+      ) +
+      scale_fill_discrete(name = "Uncertainty", labels = c("No Uncertainty", "Uncertainty"))
+  
+  
+  
+  return(plt)
+}
+
+# Generate global and distinct plots
+plt_global_occurence_1 <- plot_category_frequency(category_stats, "global")
+plt_distinct_occurence_1 <- plot_category_frequency(category_stats, "distinct")
+
+
+# Show plot
+plt_global_occurence_1
+plt_distinct_occurence_1
+
+# Save plot
+paste0(plot_path, "Bar-Category_VS_Occurrence_Global.png") %>%
+  ggsave(plt_global_occurence_1,
+         width = 20,
+         height = 15,
+         units = "cm")
+
+paste0(plot_path, "Bar-Category_VS_Occurrence_Distinct.png") %>%
+  ggsave(plt_distinct_occurence_1,
+         width = 20,
+         height = 15,
+         units = "cm")
+```
+
+Plotting uncertainty into separate direction (needs better y-axis labeling)
+
+```         
+          UP                                    DOWN
+```
+
+\<--- Relative Frequency [%] --- 0 --- Relative Uncertainty Uncertainty ---\>
+
+```{r}
+plot_category_frequency <- function(input_data, scope) {
+  if (scope != "global" & scope != "distinct") {
+    stop(sprintf("Option \"%s\" not recognised. Choose either \"global\" or \"distinct\".", scope))
+  }
+  
+  pct_sources = sprintf("pct_%s", scope) %>% sym()
+  pct_sources_uncertainty = sprintf("pct_%s_uncertainty", scope) %>% sym()
+  pct_sources_uncertainty_relative = sprintf("pct_%s_uncertainty_relative", scope) %>% sym()
+  
+  nudge_y = 1
+  
+  plt <- input_data %>%
+    ggplot(aes(x=reorder(Source, -!!pct_sources))) +
+      # --- Data Points
+      # Bar Sources
+      geom_bar(aes(y=!!pct_sources, fill="blue"),
+               stat = "identity", position = "dodge"
+               ) +
+      # Bar Uncertainty
+      geom_bar(aes(y=-!!pct_sources_uncertainty, fill = "red"),
+               stat = "identity", position = "dodge"
+               ) +
+      # Overall group percentage
+      geom_text(mapping = aes(y=!!pct_sources, label=sprintf(!!pct_sources, fmt = '%#.1f')),
+                nudge_y = nudge_y + 1,
+      ) +
+      # Uncertainty Percentage
+      geom_text(aes(y=-!!pct_sources_uncertainty, label=sprintf(!!pct_sources_uncertainty_relative, fmt = '%#.1f')),
+                nudge_y = - (nudge_y + 1),
+                ) +
+    
+      # --- Guides and other visual candy
+      scale_x_discrete(guide = guide_axis(angle = 45)) +
+      labs(x = "",
+           y = "Relative Frequency [%]",
+           title = sprintf("%s: Category Frequency (two way)", tools::toTitleCase(scope)),
+      ) +
+      scale_fill_discrete(name = "Uncertainty", labels = c("No Uncertainty", "Uncertainty"))
+  
+  
+  
+  return(plt)
+}
+
+# Generate global and distinct plots
+plt_global_occurence_2 <- plot_category_frequency(category_stats, "global")
+plt_distinct_occurence_2 <- plot_category_frequency(category_stats, "distinct")
+
+
+# Show plot
+plt_global_occurence_2
+plt_distinct_occurence_2
+```
+
+```{r}
+plot_category_frequency <- function(input_data, scope) {
+  if (scope != "global" & scope != "distinct") {
+    stop(sprintf("Option \"%s\" not recognised. Choose either \"global\" or \"distinct\".", scope))
+  }
+  
+  pct_sources = sprintf("pct_%s", scope) %>% sym()
+  pct_sources_uncertainty = sprintf("pct_%s_uncertainty", scope) %>% sym()
+  pct_sources_uncertainty_relative = sprintf("pct_%s_uncertainty_relative", scope) %>% sym()
+  
+  nudge_y = 1
+  
+  input_data_mod <- input_data %>%
+    # Reduce to only required columns
+    select(Source, !!pct_sources, !!pct_sources_uncertainty_relative) %>%
+    # Reorder and flip the direction for one dataset
+    mutate(
+      Source = reorder(Source, !!pct_sources),
+      "{pct_sources}" := -!!pct_sources
+      ) %>%
+    # Rename required columns
+    rename(`Relative Uncertainty`=!!pct_sources_uncertainty_relative, `Source Frequency`=!!pct_sources) %>%
+    # Pivot longer for easier plotting
+    pivot_longer(c(`Source Frequency`, `Relative Uncertainty`), names_to = "Scope", values_to = "value")
+
+  plt <- input_data_mod %>%
+    ggplot(aes(y=Source, x=value)) +
+      # --- Data Points
+      # Bar Sources
+      geom_bar(aes(fill=Scope),
+               stat = "identity", position = "identity"
+               ) +
+      # --- Guides and other visual candy
+      # scale_y_discrete(guide = guide_axis(angle = 45)) +
+      labs(x = sprintf("%s Frequency [%%]", tools::toTitleCase(scope)),
+           y = "",
+      ) +
+      scale_fill_discrete(name = "Uncertainty", labels = c("Uncertainty", "No Uncertainty")) +
+    
+      facet_wrap(~ factor(Scope, levels=c("Source Frequency", "Relative Uncertainty")), scales="free_x") 
+  
+  return(plt)
+}
+
+# Generate global and distinct plots
+plt_global_occurence_3 <- plot_category_frequency(category_stats, "global")
+plt_distinct_occurence_3 <- plot_category_frequency(category_stats, "distinct")
+
+
+# Show plot
+plt_global_occurence_3
+plt_distinct_occurence_3
+```
+
+```{r}
+plot_category_frequency <- function(input_data, scope) {
+  if (scope != "global" & scope != "distinct") {
+    stop(sprintf("Option \"%s\" not recognised. Choose either \"global\" or \"distinct\".", scope))
+  }
+  
+  pct_sources = sprintf("pct_%s", scope) %>% sym()
+  pct_sources_uncertainty_relative = sprintf("pct_%s_uncertainty_relative", scope) %>% sym()
+  
+  plt <- input_data %>%
+    ggplot(aes(x=!!pct_sources, y=!!pct_sources_uncertainty_relative, label = Source)) +
+      geom_point(colour="red") +
+      geom_label_repel(nudge_x = .15,
+                       box.padding = 0.5,
+                       nudge_y = 1,
+                       segment.curvature = -0.1,
+                       segment.ncp = 3,
+                       segment.angle = 20) +
+    
+    # --- Guides and other visual candy
+    labs(x = "Overall Occurence [%]", 
+         y = "Uncertainty Percentage [%]", 
+         title = sprintf("%s: Overall Occurency vs Cateogry Uncertainty", tools::toTitleCase(scope)),
+    )
+  
+  return(plt)
+}
+
+# Generate global and distinct plots
+plt_global_occurence_4 <- plot_category_frequency(category_stats, "global")
+plt_distinct_occurence_4 <- plot_category_frequency(category_stats, "distinct")
+
+
+# Show plot
+plt_global_occurence_4
+plt_distinct_occurence_4
+```
+
+### Multi Category Plot
+
+#### [Plot] All categories
+
+Reshape the data
+
+```{r}
+training_nested_list <- training_oxford %>%
+  # Reshape longer and filter for cells with entries (1)
+  pivot_longer(-Indication) %>%
+  filter(value==1) %>%
+  select(-value) %>%
+  
+  # Group by indication and create a list of all categories
+  group_by(Indication) %>%
+  summarise(Categories=list(name))
+```
+
+```{r}
+plt <- training_nested_list %>%
+  ggplot(aes(x = Categories)) +
+  geom_bar() +
+  scale_x_upset(order_by = "freq", n_sets = Inf) +
+  # Styling
+  labs(x = "Categories", y = "Occurrence [count]")
+
+# Show plot
+plt
+
+# Save plot
+paste0(plot_path, "UpSet-Category_Multicategory-Full.png") %>%
+  ggsave(plt,
+         width = 25,
+         height = 15,
+         units = "cm")
+```
+
+#### [Plot] \>1 Categories
+
+Reshape the data
+
+```{r}
+cutoff = 1
+
+training_nested_list <- training_oxford %>%
+  # Reshape longer and filter for cells with entries (1)
+  pivot_longer(-Indication) %>%
+  filter(value==1) %>%
+  select(-value) %>%
+  
+  # Group by indication and create a list of all categories
+  group_by(Indication) %>%
+  filter(n() > cutoff) %>%
+  summarise(Categories=list(name))
+```
+
+```{r}
+plt <- training_nested_list %>%
+  ggplot(aes(x = Categories)) +
+  geom_bar() +
+  scale_x_upset(order_by = "freq", n_intersections = 15) +
+  # Styling
+  labs(x = "Categories", y = "Occurrence [count]")
+  #theme_light()
+
+# Show plot
+plt
+
+# Save plot
+paste0(plot_path, "UpSet-Category_Multicategory-Cut.png") %>%
+  ggsave(plt,
+         width = 25,
+         height = 15,
+         units = "cm")
+```
+
+#### [Plot] \>1 Categories & No uncertainty
+
+Reshape the data
+
+```{r}
+cutoff = 1
+
+training_nested_list <- training_oxford %>%
+  # Remove the uncertainty column, as it's not a source
+  select(-Uncertainty, -Count) %>%
+  # Reshape longer and filter for cells with entries (1)
+  pivot_longer(-Indication) %>%
+  filter(value==1) %>%
+  select(-value) %>%
+  
+  # Group by indication and create a list of all categories
+  group_by(Indication) %>%
+  # filter(!"Uncertainty" %in% name) %>%
+  filter(n() > cutoff) %>%
+  summarise(Categories=list(name))
+```
+
+```{r}
+plt <- training_nested_list %>%
+  ggplot(aes(x = Categories)) +
+  geom_bar() +
+  scale_x_upset(order_by = "freq", n_intersections = 15) +
+  # Styling
+  labs(x = "Distinct: Multi-Source Combinations", y = "Frequency [count]")
+  #theme_light()
+
+# Show plot
+plt
+
+# Save plot
+paste0(plot_path, "UpSet-Category_Multicategory-Cut_No_Uncertainty.png") %>%
+  ggsave(plt,
+         width = 25,
+         height = 15,
+         units = "cm")
+
+# Rename for cowplot
+plt_distinct_multisource <- plt
+```
+
+##### Reapply for global and distinct
+
+```{r}
+cutoff = 1
+
+training_nested_list <- training_oxford %>%
+  select(-Uncertainty) %>%
+  # Reshape longer and filter for cells with entries (1)
+  pivot_longer(c(-Indication, -Count)) %>%
+  filter(value==1) %>%
+  select(-value) %>%
+
+  # Group by indication and create a list of all categories
+  group_by(Indication) %>%
+  # filter(!"Uncertainty" %in% name) %>%
+  filter(n() > cutoff) %>%
+  summarise(Categories=list(name), Count=unique(Count))
+
+# Expand to original size
+training_nested_list_gloabl <- training_nested_list %>%
+  uncount(Count)
+```
+
+```{r}
+plt <- training_nested_list_gloabl %>%
+  ggplot(aes(x = Categories)) +
+  geom_bar() +
+  scale_x_upset(order_by = "freq", n_intersections = 15) +
+  scale_y_continuous(trans = "log10", labels = label_comma()) +
+  annotation_logticks(sides="l") +
+  # Styling
+  labs(x = "Global: Multi-Source Combinations", y = "Frequency [log(count)]")
+  #theme_light()
+
+# Show plot
+plt_global_multisource <- plt
+plt_global_multisource
+```
+```{r}
+multi_source_num <- training_nested_list_gloabl %>% nrow()
+
+training_nested_list_gloabl %>%
+  group_by(Categories) %>%
+  summarise(Count = n()) %>%
+  mutate(Percentage = Count/multi_source_num*100) %>%
+  arrange(-Count) %>%
+  view()
+```
+
+```{r}
+plt <- training_nested_list %>%
+  ggplot(aes(x = Categories)) +
+  geom_bar() +
+  scale_x_upset(order_by = "freq", n_intersections = 15) +
+  # Log Scale
+  scale_y_continuous(trans = "log10") +
+  annotation_logticks(sides="l", outside=FALSE) +
+  # coord_cartesian() +
+  # Styling
+  labs(x = "Categories", y = "Occurrence [count]")
+  
+
+# Show plot
+plt
+```
+
+```{r}
+# Save plot
+paste0(plot_path, "UpSet-Category_Multicategory-Cut_No_Uncertainty.png") %>%
+  ggsave(plt,
+         width = 25,
+         height = 15,
+         units = "cm")
+
+# Rename for cowplot
+plt_dedup_multisource <- plt
+```
+
+#### Uncertainty Combinations
+
+Reshape the data
+
+```{r}
+cutoff = 1
+
+training_nested_list <- training_oxford %>%
+  # Reshape longer and filter for cells with entries (1)
+  pivot_longer(-Indication) %>%
+  filter(value==1) %>%
+  select(-value) %>%
+  
+  # Group by indication and create a list of all categories
+  group_by(Indication) %>%
+  filter(n() > cutoff, "Uncertainty" %in% name) %>%
+  summarise(Categories=list(name))
+```
+
+```{r}
+plt <- training_nested_list %>%
+  ggplot(aes(x = Categories)) +
+  geom_bar() +
+  scale_x_upset(order_by = "freq", n_intersections = 15) +
+  # Styling
+  labs(x = "Categories", y = "Occurrence [count]")
+  #theme_light()
+
+# Show plot
+plt
+
+# Save plot
+paste0(plot_path, "UpSet-Category_Multicategory-Uncertainty.png") %>%
+  ggsave(plt,
+         width = 25,
+         height = 15,
+         units = "cm")
+```
+
+### Debugging
+
+```{r}
+cutoff = 1
+term_1 = "Neurological"; term_2 = "Not Informative"
+term_1 = "Skin & Soft Tissue"; term_2 = "Abdominal"
+
+training_oxford %>%
+  # Reshape longer and filter for cells with entries (1)
+  pivot_longer(-Indication) %>%
+  filter(value==1) %>%
+  select(-value) %>%
+  
+  # Group by indication and create a list of all categories
+  group_by(Indication) %>%
+  filter(!"Uncertainty" %in% name) %>%
+  filter(term_1 %in% name, term_2 %in% name) %>%
+  filter(n() > cutoff) %>%
+  summarise(Indication = first(Indication), Categories = paste(name, collapse = ", "))
+```
+
+### [Result] Combine into one plot
+
+Use cowplot to create panel A)-D)
+
+|                    | Counts | Deduplicated |
+|--------------------|--------|--------------|
+| Overall Categories | A)     | B)           |
+| Multi Source       | C)     | D)           |
+
+Check the plots
+
+```{r}
+# Rename for cowplot
+plt_distinct_occurence_1
+plt_global_occurence_1
+plt_distinct_multisource
+# plt_global_multisource
+```
+
+Cowplot
+
+```{r}
+
+for (i in seq(1, 4)) {
+  plt_distinct_occurrence = get(sprintf("plt_distinct_occurence_%i", i))
+  plt_global_occurrence = get(sprintf("plt_global_occurence_%i", i))
+    
+  plt <- plot_grid(
+            plt_distinct_occurrence +
+              theme(legend.position="none"),
+            plt_global_occurrence +
+              theme(axis.text.y = element_blank(),
+                       axis.ticks.y = element_blank(),
+                       axis.title.y = element_blank(),
+                       legend.position="none"
+                    ),
+            plt_distinct_multisource,
+            plt_global_multisource,
+            labels = c('A', 'B', 'C', 'D'),
+            ncol = 2,
+            label_size = 12)
+  
+  plt
+  
+  # Save plot
+  paste0(plot_path, sprintf("Multi_Panel_Test_%i.png", i)) %>%
+    ggsave(plt,
+           width = 25,
+           height = 20,
+           units = "cm")}
+```
+
+```{r}
+plt <- plot_grid(
+          plt_global_occurence_3 +
+            theme(legend.position="none"),
+          plt_distinct_occurence_3 +
+            theme(legend.position="none"),
+          plt_global_multisource,
+          plt_distinct_multisource,
+          labels = c('A', 'B', 'C', 'D'),
+          ncol = 2,
+          label_size = 12)
+
+plt
+
+# Save plot
+paste0(plot_path, "Multi_Panel_Figure_1.png") %>%
+  ggsave(plt,
+         width = 25,
+         height = 20,
+         units = "cm")
+
+paste0(plot_path, "Multi_Panel_Figure_1.pdf") %>%
+  ggsave(plt,
+         width = 25,
+         height = 20,
+         units = "cm")
+```
+
+### [Result] Ground truth Labels Numbers
+```{r}
+
+```
+
+
+
+## [Appendix] Test Data
+Compare training and test data
+
+Check the following:
+-  Compare class distributions (relative)
+```{r}
+# --- Training
+
+# Training: Scaled category count
+training_oxford_category_count <- training_oxford %>%
+  # Scale source columns by count column
+  mutate(across(!!source_categories, ~ . * Count)) %>%
+  select(!!source_categories) %>%
+  colSums()
+
+# --- Testing
+
+# Testing: Category count
+testing_oxford_category_count <- testing_oxford %>%
+  select(!!source_categories) %>%
+  colSums()
+
+testing_banbury_category_count <- testing_banbury %>%
+  select(!!source_categories) %>%
+  colSums()
+```
+
+
+```{r}
+data.frame("Training" = training_oxford_category_count, 
+           "Oxford Test" = testing_oxford_category_count,
+           "Banbury Test" = testing_banbury_category_count,
+           check.names = FALSE
+           ) %>%
+  mutate(across(everything(),
+                ~ sprintf("%.2f%% (n=%s)", 
+                          proportions(.) *100,
+                          .
+                          )
+                )
+         ) %>%
+  t() %>%
+  as.data.frame() %>%
+  knitr::kable()
+```
+
