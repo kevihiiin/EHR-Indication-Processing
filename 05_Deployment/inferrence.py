@@ -66,7 +66,7 @@ def main(args):
 
     print("Performing inference")
     pred_output = []
-    for out in tqdm(inference_pipeline(KeyDataset(inference_dataset, "_Input_String"), batch_size=args.batch_size)):
+    for out in tqdm(inference_pipeline(KeyDataset(inference_dataset, "_Input_String"))):
         pred_output.append(out)
 
     # --- Postprocess Data ---
