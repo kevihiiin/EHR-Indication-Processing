@@ -7,7 +7,9 @@ Two options are available:
 
 ## Standalone Python/Bash
 The model can be run via the CLI. The following steps are required to run the model:
-1. Install the required packages via `pip install -r requirements_deployment.txt`
+1. Install the required packages (from within `05_Deployment/`):
+   - **uv (recommended):** `uv sync`
+   - **pip:** `pip install .` (or `pip install ./05_Deployment` from the repo root)
 2. Download the pretrained model weights into a path of your choice (`<path_to_model>`)
 
 ```
@@ -73,6 +75,22 @@ For example, to run the model on GPU 0, use the following command:
 ```bash
 python3 inferrence.py --input_file <input_file> --output_file <output_file> --model_path <model_path> --device 0
 ```
+
+## Spot Checking / Interactive Mode
+
+The `inferrence_spot_check.py` script loads the model once and lets you classify individual indications without processing an entire CSV file. Useful for quick sanity checks and demos.
+
+**Interactive mode** — type indications one at a time:
+```bash
+python3 inferrence_spot_check.py --model_path <path_to_model>
+```
+
+**Single query mode** — classify one indication and exit:
+```bash
+python3 inferrence_spot_check.py --model_path <path_to_model> --query "pneumonia"
+```
+
+Options: `--device` (default `cpu`), `--pred_threshold` (default `0.5`).
 
 ## Standalone Docker
 TODO, add docker wrapper for the model

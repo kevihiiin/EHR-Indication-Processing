@@ -41,23 +41,39 @@ Short description of the folder structure in this repository. Please consult the
     └── ... # Excluded from VCS. Used to test code locally without being committed
 ```
 ## Setup
-All of the required dependencies for python are listed in the `requirements.txt` file. To set up the project, create a new virtual environment and install the packages:
 
+Dependencies are declared in `pyproject.toml` (source of truth).
+
+**Using uv (recommended):**
 ```bash
-pip install -r requirements.txt
+uv sync --all-extras   # Install all dependencies (including dev extras: jupyter, ipykernel, etc.)
+uv run <command>       # Run commands within the virtual environment
+```
+
+**Using pip:**
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install ".[dev]"
 ```
 
 
 ## Inferrence/Deployment of Classification Model
 Check out the folder `05_Deployment` to find an example script to run inference using Bio+Clinical BERT on a list of indications. The example works with both CPUs and GPUs.
 
+A spot-check tool (`05_Deployment/inferrence_spot_check.py`) is also available for quickly testing single indications interactively or via CLI.
+
 
 ## Cite
-If you use, modify, or deploy any part of the code or results from this repository, please cite the [following paper](doi.org/10.21203/rs.3.rs-4651377/v1):
+If you use, modify, or deploy any part of the code or results from this repository, please cite the [following paper](https://doi.org/10.1038/s43856-025-00790-1):
 ```
-@article{yuan2024transformers,
+@article{yuan2025transformers,
   title={Transformers and large language models are efficient feature extractors for electronic health record studies},
-  author={Yuan, Kevin and Yoon, Chang Ho and Gu, Qingze and Munby, Henry and Walker, Sarah and Zhu, Tingting and Eyre, David},
-  year={2024}
+  author={Yuan, Kevin and Yoon, Chang Ho and Gu, Qingze and Munby, Henry and Walker, A Sarah and Zhu, Tingting and Eyre, David W},
+  journal={Communications Medicine},
+  volume={5},
+  number={1},
+  pages={83},
+  year={2025},
+  publisher={Nature Publishing Group UK London}
 }
 ```
